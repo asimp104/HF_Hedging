@@ -1,5 +1,7 @@
 import numpy as np
-from scipy import integrate
+from mpmath import *
+import matplotlib.pyplot as plt
+
 
 
 def log_psi_0(t, y_t, l_star_t, r, A_star, B0_star, B_star):
@@ -127,46 +129,76 @@ def compute_l_t_star(s_t, q_t, delta):
 
 def risk_minimizing_hedge(t, T, y_t, l_star_t, r, A_star, B0_star, B_star, f_check, option_params, R):
     """
-    Compute the risk-minimizing hedging position using equation (8)
+    Compute the risk-minimizing hedge ratio using Proposition 2.
+    
+    Parameters:
+    -----------
+    t : int
+        Current time
+    T : int
+        Maturity time
+    y_t : float
+        Current log-price
+    l_star_t : array
+        Current factor values
+    r : float
+        Risk-free rate
+    A_star, B0_star, B_star : functions
+        Coefficient functions for the MGF
+    f_check : function
+        Laplace transform of option payoff function
+    option_params : dict
+        Option parameters (e.g., strike price)
+    R : float
+        Contour parameter (typically 1.5 for calls, -0.5 for puts)
+    
+    Returns:
+    --------
+    xi_t : float
+        The risk-minimizing hedge ratio (number of shares to hold)
     """
-    # Computing psi_0_t
-    log_psi_0_val = log_psi_0(t, y_t, l_star_t, r, A_star, B0_star, B_star)
+
+    
+    # Define the integrand function using your helper functions
+    def integrand(y):
+        y_np = float(y)
+        z = complex(R, y_np)
         
-    # Defining the integrand function for numerical integration
-    def integrand_for_quad(y):
-        z = complex(R, y)
-        # Calculate components directly here for debugging
+        # Compute psi_1 and psi_2 using your helper functions
         log_psi_1_val = log_psi_1(t, z, y_t, l_star_t, A_star, B0_star, B_star, T)
         log_psi_2_val = log_psi_2(t, z, y_t, l_star_t, r, A_star, B0_star, B_star, T)
-
-        psi_diff = np.exp(log_psi_2_val) - np.exp(log_psi_1_val)
-        exp_term = np.exp((z-1) * y_t)
-        f_val = f_check(z, **option_params)
-
-
-        # Calculate the integrand value
-        integrand_value = exp_term * psi_diff * f_val
         
-        # Since dz = i*dy, and we have 1/(2πi) in front, we need the real part of integrand_value
-        # The factor i from dz cancels with the i in the denominator
-        return integrand_value.real
-    
-    # Integrate over smaller segments for better diagnostics
-    segments = [(-100, -50), (-50, -10), (-10, -1), (-1, 1), (1, 10), (10, 50), (50, 100)]
-    total_integral = 0
-    
-    for start, end in segments:
-        segment_result, _ = integrate.quad(integrand_for_quad, start, end, limit=1000)
+        # Convert to values
+        psi_1_val = np.exp(log_psi_1_val)
+        psi_2_val = np.exp(log_psi_2_val)
+        
+        # Compute difference
+        psi_diff = psi_2_val - psi_1_val
+        
+        # Exponential term
+        exp_term = np.exp((z-1) * y_t)
+        
+        # Payoff transform
+        f_val = f_check(z, **option_params)
+        
+        res = exp_term * psi_diff * f_val * 1j
+        res_mp = mpc(res.real, res.imag)
 
-        total_integral += segment_result
+        # Full integrand
+        return res_mp
 
-    num = np.exp(-r * (T - t)) 
+    # Perform numerical integration
+    integral_result = quad(integrand, [-inf, inf], method="tanh-sinh")
+    
+    # Compute psi_0 (denominator term) using your helper function
+    log_psi_0_val = log_psi_0(t, y_t, l_star_t, r, A_star, B0_star, B_star)
+    psi_0 = np.exp(log_psi_0_val)
 
+    # Compute final hedge ratio
+    xi_t = np.exp(-r * (T-t)) * integral_result / (2 * np.pi * psi_0 * 1j)
     
-    # Computing the final result
-    xi_t_plus_1 = np.exp(-r * (T - t)) / (2 * (np.exp(log_psi_0_val) - 1) * np.pi) * total_integral
-    
-    return xi_t_plus_1
+    return xi_t
+
 
 def option_price(t, T, y_t, l_star_t, r, A_star, B0_star, B_star, f_check, option_params, R):
     """
@@ -186,13 +218,12 @@ def option_price(t, T, y_t, l_star_t, r, A_star, B0_star, B_star, f_check, optio
     Returns:
     Option price
     """
-    # Defining the complex contour for numerical integration
-    # We'll use a contour that goes vertically through R + i*y for y in [-N, N]
-    N = 100  # Limit for numerical integration
+
     
     # Defining the integrand function for the given parameters
-    def price_integrand(y):
-        z = complex(R, y)
+    def integrand(y):
+        y_np = float(y)
+        z = complex(R, y_np)
         # Computing e^{zY_t}
         exp_term = np.exp(z * y_t)
         
@@ -203,14 +234,89 @@ def option_price(t, T, y_t, l_star_t, r, A_star, B0_star, B_star, f_check, optio
         f_check_val = f_check(z, **option_params)
         
         # Computing the integrand
-        result = exp_term * psi_1_val * f_check_val
+        result = exp_term * psi_1_val * f_check_val * 1j
+        result_mp = mpc(result.real, result.imag)
         
-        return result.real
+        return result_mp
     
     # Computing the integral using numerical integration
-    integral_result, _ = integrate.quad(price_integrand, -N, N, limit=1000)
+    integral_result = quad(integrand, [-inf, inf], method="tanh-sinh")
     
     # Computing the final result
-    price = np.exp(-r * (T - t)) * integral_result / (2 * np.pi)
+    price = np.exp(-r * (T - t)) * integral_result / (2 * np.pi * 1j)
     
     return price
+
+
+def plot_func(t, T, y_t, l_star_t, r, A_star, B0_star, B_star, f_check, option_params, range):
+    # y values
+    y_vals = linspace(-range, range, 1000)
+    R = 2.0  # adjust as needed
+
+    # Storage
+    psi1_real, psi1_imag = [], []
+    psi2_real, psi2_imag = [], []
+    exp_real, exp_imag = [], []
+    diff_real, diff_imag = [], []
+    fval_real, fval_imag = [], []
+
+    int_real, int_imag = [], []
+
+    res_real, res_imag = [], []
+
+    for y in y_vals:
+        z = complex(R, y)
+        
+        # Your functions
+        log_psi_1_val = log_psi_1(t, z, y_t, l_star_t, A_star, B0_star, B_star, T)
+        log_psi_2_val = log_psi_2(t, z, y_t, l_star_t, r, A_star, B0_star, B_star, T)
+        
+        psi_1 = exp(log_psi_1_val)
+        psi_2 = exp(log_psi_2_val)
+        exp_term = exp((z - 1) * y_t)
+        psi_diff = psi_2 - psi_1
+        f_val = f_check(z, **option_params)
+
+        integrand = exp_term * psi_diff * f_val* 1j
+
+        res = exp(z*y_t) * psi_1 * f_val
+        res_real.append(res.real)
+        res_imag.append(res.imag)
+
+        
+        # Store parts
+        psi1_real.append(psi_1.real)
+        psi1_imag.append(psi_1.imag)
+        psi2_real.append(psi_2.real)
+        psi2_imag.append(psi_2.imag)
+        exp_real.append(exp_term.real)
+        exp_imag.append(exp_term.imag)
+        diff_real.append(psi_diff.real)
+        diff_imag.append(psi_diff.imag)
+        fval_real.append(f_val.real)
+        fval_imag.append(f_val.imag)
+        int_real.append(integrand.real)
+        int_imag.append(integrand.imag)
+
+    # Plot function
+    def plot_complex_component(y_vals, real_vals, imag_vals, title):
+        plt.figure(figsize=(10, 4))
+        plt.plot(y_vals, real_vals, label='Real part')
+        plt.plot(y_vals, imag_vals, label='Imag part', linestyle='--')
+        plt.title(title)
+        plt.xlabel('y')
+        plt.ylabel('Value')
+        plt.legend()
+        plt.grid(True)
+        plt.tight_layout()
+        plt.show()
+
+    # Generate plots
+    plot_complex_component(y_vals, psi1_real, psi1_imag, 'ψ₁(z)')
+    plot_complex_component(y_vals, psi2_real, psi2_imag, 'ψ₂(z)')
+    plot_complex_component(y_vals, exp_real, exp_imag, 'exp((z-1)·yₜ)')
+    plot_complex_component(y_vals, diff_real, diff_imag, 'ψ₂(z) - ψ₁(z)')
+    plot_complex_component(y_vals, fval_real, fval_imag, 'f̂(z)')
+    plot_complex_component(y_vals, int_real, int_imag, 'Integrand')
+    plot_complex_component(y_vals, res_real, res_imag, 'price integrand')
+
